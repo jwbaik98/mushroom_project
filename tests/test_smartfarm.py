@@ -44,15 +44,15 @@ def test_actuator_hysteresis():
 
 def test_manager_multi_farm(tmp_path):
     m = FarmManager(str(tmp_path / "farms.json"), str(tmp_path / "sf.db"))
-    m.add_farm("Greenhouse 2", ftype="greenhouse", stage="culture")
+    g = m.add_farm("Greenhouse 2", ftype="greenhouse", stage="culture")
     assert len(m.farms) == 2
     res = m.poll_all()
     for fid, r in res.items():
         assert "reading" in r and r["reading"]["temperature"] is not None
         assert m.storage.latest(fid) is not None
-    m.set_actuator("container-a", "fan", True)
-    assert m.storage.actuator_log("container-a")[0]["source"] == "manual"
-    m.remove_farm("greenhouse-2")
+    m.set_actuator("container-1", "fan", True)
+    assert m.storage.actuator_log("container-1")[0]["source"] == "manual"
+    m.remove_farm(g["id"])
     assert len(FarmManager(str(tmp_path / "farms.json"), str(tmp_path / "sf2.db")).farms) == 1
 
 

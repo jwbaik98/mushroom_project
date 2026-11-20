@@ -18,6 +18,10 @@ DEVICES = {"heater": "🔥 히터", "cooler": "❄️ 냉방기", "humidifier": 
 
 READING_KEYS = ("temperature", "humidity", "co2", "lux", "substrate_moisture")
 
+# 센서가 물리적으로 낼 수 있는 값 범위. 벗어나면 고장/노이즈로 보고 버린다.
+VALID_RANGE = {"temperature": (-30.0, 60.0), "humidity": (0.0, 100.0), "co2": (250.0, 20000.0),
+               "lux": (0.0, 200000.0), "substrate_moisture": (0.0, 100.0)}
+
 
 def _normalize(data: dict) -> dict:
     """노드별 서로 다른 키 이름을 표준 키로 맞춘다."""
@@ -28,9 +32,12 @@ def _normalize(data: dict) -> dict:
         k = alias.get(k.lower(), k.lower())
         if k in READING_KEYS and v is not None:
             try:
-                out[k] = float(v)
+                f = float(v)
             except (TypeError, ValueError):
-                pass
+                continue
+            lo, hi = VALID_RANGE[k]
+            if f == f and lo <= f <= hi:  # f == f : NaN 제외
+                out[k] = f
     return out
 
 
@@ -45,6 +52,9 @@ class BaseDriver:
 
     def apply(self, actuators: dict) -> None:
         """구동기 상태를 실제 장치에 전송 (기본: 아무것도 하지 않음)."""
+
+    def close(self) -> None:
+        """연결 자원(시리얼 포트, MQTT 세션) 해제."""
 
 
 class SimulatorDriver(BaseDriver):
@@ -139,18 +149,25 @@ class MqttDriver(BaseDriver):
     def _on_message(self, _c, _u, msg):
         try:
             self.latest = _normalize(json.loads(msg.payload.decode("utf-8")))
+            self.latest_at = time.time()
         except Exception:
             pass
 
     def read(self, actuators: dict) -> dict:
         if not self.latest:
             raise RuntimeError("MQTT 수신 데이터 없음")
+        if time.time() - getattr(self, "latest_at", 0) > self.cfg.get("max_age_sec", 120):
+            raise RuntimeError("MQTT 센서 메시지가 2분 이상 수신되지 않음")
         return dict(self.latest)
 
     def apply(self, actuators: dict) -> None:
         topic = self.act_cfg.get("topic")
         if topic:
             self.client.publish(topic, json.dumps(actuators), retain=True)
+
+    def close(self) -> None:
+        self.client.loop_stop()
+        self.client.disconnect()
 
 
 class SerialDriver(BaseDriver):
@@ -171,6 +188,9 @@ class SerialDriver(BaseDriver):
 
     def apply(self, actuators: dict) -> None:
         self.ser.write((json.dumps(actuators) + "\n").encode("utf-8"))
+
+    def close(self) -> None:
+        self.ser.close()
 
 
 DRIVERS = {"simulator": SimulatorDriver, "http": HttpDriver, "mqtt": MqttDriver, "serial": SerialDriver}

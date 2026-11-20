@@ -1,6 +1,8 @@
 """센서값 → 경보 / 병해 위험도 / 자동제어 판단 로직 (하드웨어 독립, 테스트 가능)."""
 from __future__ import annotations
 
+from datetime import datetime
+
 from .profiles import METRICS
 
 LEVEL_ORDER = {"normal": 0, "warning": 1, "critical": 2}
@@ -80,10 +82,17 @@ def disease_risk(reading: dict, recent: list[dict] | None = None) -> dict:
     return risks
 
 
-def day_night_diff(history: list[dict]) -> float | None:
-    temps = [r["temperature"] for r in history if r.get("temperature") is not None]
-    if len(temps) < 2:
+def day_night_diff(history: list[dict], min_span_hours: float = 20.0) -> float | None:
+    """24시간 최고-최저 온도차. 수집 기간이 min_span_hours 미만이면 판단 보류(None)."""
+    rows = [r for r in history if r.get("temperature") is not None]
+    if len(rows) < 2:
         return None
+    if all("ts" in r for r in rows):
+        fmt = "%Y-%m-%d %H:%M:%S"
+        span = datetime.strptime(max(r["ts"] for r in rows), fmt) - datetime.strptime(min(r["ts"] for r in rows), fmt)
+        if span.total_seconds() < min_span_hours * 3600:
+            return None
+    temps = [r["temperature"] for r in rows]
     return round(max(temps) - min(temps), 1)
 
 
@@ -104,6 +113,12 @@ def decide_actuators(reading: dict, profile: dict, current: dict, hour: int) -> 
     s = dict(current)
     t, h = reading.get("temperature"), reading.get("humidity")
     co2, lux = reading.get("co2"), reading.get("lux")
+
+    # 안전: 측정값이 없으면 해당 열원/가습 장치는 끈다 (값 없이 계속 가동 방지)
+    if t is None:
+        s["heater"], s["cooler"] = False, False
+    if h is None:
+        s["humidifier"] = False
 
     if t is not None and profile.get("temperature"):
         lo, hi = profile["temperature"]

@@ -44,6 +44,15 @@ python app/collector.py        # farms.json 에 "ui_collector": false 로 앱의
 ```
 데이터는 `app/smartfarm.db`(SQLite)에 저장됩니다.
 
+## 안전 기능
+- 센서 값 누락·고장·통신 끊김 → 히터·냉방·가습 OFF, 환기 ON (안전모드)
+- 히터/냉방기 인터록, 자동제어 최소 전환 간격(`min_switch_sec`, 기본 60초)
+- 센서 데이터 지연 감지, 비정상 값(NaN·범위 밖) 자동 제외
+- 접속 비밀번호: 환경변수 `SMARTFARM_PASSWORD`
+- 데이터 보관 기간: `retention_days`(기본 90일)
+
+QA 점검 내역은 [`docs/QA_REPORT.md`](docs/QA_REPORT.md) 참고.
+
 ## 테스트
 ```bash
 pytest tests

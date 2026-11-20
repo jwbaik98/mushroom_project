@@ -28,12 +28,15 @@ def main():
             if r.get("error"):
                 print(f"[{name}] 센서 오류: {r['error']}")
                 continue
+            if r.get("pending") or "reading" not in r:
+                continue
             rd = r["reading"]
             on = [d for d, v in r["actuators"].items() if v]
             print(f"[{name}] {rd['temperature']}℃ {rd['humidity']}% CO2 {rd['co2']}ppm "
                   f"{rd['lux']}lux | {m.status_level(r)} | ON: {','.join(on) or '-'}")
             for a in r["alerts"]:
                 print(f"   ⚠ {a['message']}")
+        m.maintenance()  # 보관기간 지난 데이터 정리 (하루 1회)
         if args.once:
             break
         time.sleep(max(2, int(m.config.get("poll_interval_sec", 10))))

@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE TABLE IF NOT EXISTS actuator_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT, farm_id TEXT NOT NULL, ts TEXT NOT NULL,
     device TEXT, state INTEGER, source TEXT);
+CREATE INDEX IF NOT EXISTS idx_alerts_farm ON alerts(farm_id, metric, ts);
 CREATE TABLE IF NOT EXISTS diagnoses (
     id INTEGER PRIMARY KEY AUTOINCREMENT, farm_id TEXT NOT NULL, ts TEXT NOT NULL,
     result TEXT, detail TEXT);
@@ -35,6 +36,7 @@ class Storage:
         self.lock = threading.Lock()
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")  # 수집기·화면 동시 접근 시 잠금 충돌 감소
         self.conn.executescript(SCHEMA)
 
     def _exec(self, sql, args=()):
@@ -51,11 +53,18 @@ class Storage:
         self._exec(f"INSERT INTO readings (farm_id, ts, {', '.join(COLS)}) VALUES (?, ?, {', '.join('?' * len(COLS))})",
                    (farm_id, ts or _now(), *[reading.get(c) for c in COLS]))
 
-    def readings(self, farm_id, hours=24, limit=5000):
+    def readings(self, farm_id, hours=24, max_points=2000):
+        """기간 내 측정값. 건수가 max_points 를 넘으면 시간 구간 평균으로 다운샘플링."""
         since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-        return self._query("SELECT * FROM readings WHERE farm_id=? AND ts>=? ORDER BY ts DESC LIMIT ?",
-                           (farm_id, since, limit))[::-1]
-
+        n = self._query("SELECT COUNT(*) AS n FROM readings WHERE farm_id=? AND ts>=?", (farm_id, since))[0]["n"]
+        if n <= max_points:
+            return self._query("SELECT * FROM readings WHERE farm_id=? AND ts>=? ORDER BY ts", (farm_id, since))
+        bucket = max(1, int(hours * 3600 / max_points) + 1)  # 초 단위 구간
+        avg = ", ".join(f"ROUND(AVG({c}), 2) AS {c}" for c in COLS)
+        return self._query(
+            f"SELECT farm_id, MIN(ts) AS ts, {avg} FROM readings WHERE farm_id=? AND ts>=? "
+            f"GROUP BY CAST(strftime('%s', ts) AS INTEGER) / ? ORDER BY ts",
+            (farm_id, since, bucket))
     def latest(self, farm_id):
         rows = self._query("SELECT * FROM readings WHERE farm_id=? ORDER BY id DESC LIMIT 1", (farm_id,))
         return rows[0] if rows else None

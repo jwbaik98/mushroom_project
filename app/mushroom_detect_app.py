@@ -145,6 +145,19 @@ def apply_custom_css(theme):
         @keyframes blink {{ 0% {{ opacity: 1; }} 50% {{ opacity: 0.4; }} 100% {{ opacity: 1; }} }}
     </style>""", unsafe_allow_html=True)
 
+# --- [선택] 접속 비밀번호: 환경변수 SMARTFARM_PASSWORD 설정 시 장치 제어 화면 보호 ---
+_app_pw = os.environ.get("SMARTFARM_PASSWORD")
+if _app_pw and not st.session_state.get("authed"):
+    st.title("🔒 표고버섯 AI 스마트팜")
+    _pw_in = st.text_input("비밀번호", type="password")
+    if _pw_in:
+        import hmac
+        if hmac.compare_digest(_pw_in, _app_pw):
+            st.session_state.authed = True
+            st.rerun()
+        st.error("비밀번호가 올바르지 않습니다.")
+    st.stop()
+
 with st.sidebar:
     st.title("🍄 설 정")
     theme = st.radio("🎨 테마", ["Light (화이트)", "Dark (블랙)"])
@@ -385,13 +398,16 @@ elif mode == "📹 실시간 영상":
         
         while st.session_state.run_cam:
             ret, frame = cap.read()
-            if not ret: break
+            if not ret:
+                st.error("📷 카메라 영상을 받을 수 없습니다. 카메라 연결/다른 프로그램 사용 여부를 확인하세요.")
+                st.session_state.run_cam = False
+                break
             
             # YOLO 탐지 (속도를 위해 verbose=False)
             res = yolo_model.predict(frame, conf=conf_v, iou=iou_v, verbose=False)
             
             # 1. 화면 출력 (경고 해결: use_container_width 사용)
-            st_frame.image(res[0].plot(), channels="BGR", use_container_width=True)
+            st_frame.image(res[0].plot(), channels="BGR", width="stretch")
             
             if len(res[0].boxes) > 0:
                 # 가장 확실한 객체 하나 선택
@@ -411,6 +427,13 @@ elif mode == "📹 실시간 영상":
                 # 2. AI 분석 주기 최적화 (30프레임마다 상태 체크, 변화 있을 때만 실행)
                 if frame_idx % 30 == 0:
                     if d_name != st.session_state.prev_status:
+                        # 상태 변화는 AI 성공 여부와 관계없이 농장 이력/경보에 기록
+                        st.session_state.prev_status = d_name
+                        if current_farm:
+                            farm_mgr.storage.add_diagnosis(current_farm, d_name, {"source": "camera"})
+                            if d_name != "정상":
+                                farm_mgr.storage.add_alert(current_farm, "critical", "vision",
+                                                           f"카메라 병해 탐지: {d_name}")
                         # 상태가 변했을 때만 AI 처방전 갱신
                         with st.spinner(f"⚕️ {d_name} 대응 지침 생성 중..."):
                             current_context = search_rag(d_name)
@@ -428,6 +451,8 @@ elif mode == "📹 실시간 영상":
                                 농민 여러분, {d_name} 확산을 막기 위해 다음 지침을 따르십시오.
                                 1. """
                             try:
+                                if llm_model is None:
+                                    raise RuntimeError("LLM 미설치")
                                 output = llm_model(
                                     prompt, 
                                     max_tokens=400, # 속도를 위해 토큰 수 제한
@@ -439,11 +464,9 @@ elif mode == "📹 실시간 영상":
                                 )
                                 ans_text = "1. " + output['choices'][0]['text'].strip()
                                 st.session_state.last_ai_res = ans_text
-                                st.session_state.prev_status = d_name
-                                if current_farm:
-                                    farm_mgr.storage.add_diagnosis(current_farm, d_name, {"source": "camera"})
-                            except:
-                                st.session_state.last_ai_res = "분석 일시 지연 (재시도 중)"
+                            except Exception:
+                                st.session_state.last_ai_res = ("AI 처방 생성 불가 — 매뉴얼 기본 지침: 습도 80% 이하, "
+                                                                 "온도 15~18℃, 강제 환기, 오염 배지 격리")
 
                 # AI 결과 표시 (루프 내내 유지)
                 ai_area.markdown(f'''
@@ -459,7 +482,9 @@ elif mode == "📹 실시간 영상":
         cap.release()
         
 # 사이드바 맨 아래에 종료 버튼 배치
-if st.sidebar.button("🛑 Exit Program"):
+st.sidebar.caption("⚠️ 종료하면 백그라운드 수집·자동제어도 함께 멈춥니다.")
+_exit_ok = st.sidebar.checkbox("종료 확인")
+if st.sidebar.button("🛑 Exit Program", disabled=not _exit_ok):
     placeholder = st.empty() # 메인 화면 영역 확보
     with placeholder.container():
         st.error("### 🏁 시스템이 완전히 종료되었습니다.")

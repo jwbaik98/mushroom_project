@@ -8,7 +8,7 @@
  * GET  http://<노드IP>/sensor    -> {"temperature":17.2,"humidity":88.1,"co2":820,"lux":150,"substrate_moisture":61}
  * POST http://<노드IP>/actuator  <- {"heater":false,"cooler":true,"humidifier":false,"fan":true,"led":false}
  *
- * 라이브러리: Adafruit SHT31, BH1750, MHZ19, ArduinoJson
+ * 라이브러리: Adafruit SHT31, BH1750, MHZ19, ArduinoJson (v6)
  */
 #include <WiFi.h>
 #include <WebServer.h>
@@ -62,12 +62,13 @@ void setup() {
   Serial.begin(115200);
   for (int i = 0; i < 5; i++) { pinMode(DEV_PINS[i], OUTPUT); digitalWrite(DEV_PINS[i], !RELAY_ON); }
   Wire.begin();
-  sht31.begin(0x44);
+  if (!sht31.begin(0x44)) Serial.println("SHT31 not found - 배선 확인");
   lightMeter.begin();
   Serial2.begin(9600);
   mhz19.begin(Serial2);
   mhz19.autoCalibration(false);
 
+  WiFi.setAutoReconnect(true);   // 공유기 재시작·순간 끊김 후 자동 재접속
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   Serial.printf("\nIP: %s\n", WiFi.localIP().toString().c_str());
@@ -80,6 +81,10 @@ void setup() {
 void loop() {
   server.handleClient();
   // 안전장치: PC/서버와 10분간 통신이 끊기면 히터·가습기 OFF, 환기팬 ON
+  if (WiFi.status() != WL_CONNECTED) {
+    static unsigned long lastTry = 0;
+    if (millis() - lastTry > 30000UL) { lastTry = millis(); WiFi.reconnect(); }
+  }
   if (lastCmd && millis() - lastCmd > 600000UL) {
     digitalWrite(DEV_PINS[0], !RELAY_ON);
     digitalWrite(DEV_PINS[2], !RELAY_ON);

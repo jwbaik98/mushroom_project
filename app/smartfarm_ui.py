@@ -1,9 +1,9 @@
 """Streamlit 스마트팜 화면: 통합 대시보드 / 농장 모니터링·제어 / 농장 관리."""
 from __future__ import annotations
 
+import html
 import json
 import os
-from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -30,26 +30,23 @@ def _fmt(v, unit):
     return "-" if v is None else f"{v:.1f}{unit}" if isinstance(v, float) else f"{v}{unit}"
 
 
-def _latest_result(m: FarmManager, fid: str) -> dict:
-    """최신 측정값 기반 상태 (센서 재측정 없이 DB 조회)."""
-    from smartfarm import rules
+def _icon(farm) -> str:
+    return FARM_TYPES.get(farm.get("type"), "🏭").split()[0]
 
-    latest = m.storage.latest(fid)
-    if fid in m.errors:
-        return {"error": m.errors[fid]}
-    if not latest:
-        return m.poll(fid)
-    profile = m.profile(fid)
-    recent = m.storage.readings(fid, hours=1)
-    risks = rules.disease_risk(latest, recent[-30:])
-    alerts = rules.evaluate(latest, profile, datetime.now().hour)
-    for name, sc in risks.items():
-        if sc >= 70:
-            alerts.append({"metric": f"risk:{name}", "level": "critical" if sc >= 85 else "warning",
-                           "message": f"{name} 위험 {sc}점"})
-    return {"reading": latest, "alerts": alerts, "risks": risks, "actuators": m.actuator_state(fid),
-            "day_night_diff": rules.day_night_diff(m.storage.readings(fid, hours=24)),
-            "day_night_required": profile.get("day_night_diff"), "ts": latest["ts"]}
+
+def _status(m: FarmManager, fid: str) -> dict:
+    """화면 표시용 상태: 수집기가 저장한 최신값 기준 (센서 중복 측정 없음)."""
+    snap = m.snapshot(fid)
+    if snap.get("pending") and not m.collector_alive:
+        snap = m.poll(fid)
+    return snap
+
+
+def _header_notices(m: FarmManager):
+    if m.config_error:
+        st.error(m.config_error)
+    if m.config.get("ui_collector", True) and not m.collector_alive:
+        st.error("⛔ 백그라운드 수집기가 멈춰 있습니다. 앱을 다시 시작하세요.")
 
 
 # ---------------------------------------------------------------- 통합 대시보드
@@ -61,7 +58,8 @@ def render_dashboard(m: FarmManager):
 
     @st.fragment(run_every=m.config.get("poll_interval_sec", 10))
     def cards():
-        results = {f["id"]: _latest_result(m, f["id"]) for f in m.farms}
+        _header_notices(m)
+        results = {f["id"]: _status(m, f["id"]) for f in m.farms}
         levels = [m.status_level(r) for r in results.values()]
         c = st.columns(4)
         c[0].metric("등록 농장", f"{len(m.farms)}개")
@@ -76,7 +74,9 @@ def render_dashboard(m: FarmManager):
             stage = STAGE_PROFILES.get(farm.get("stage"), {}).get("label", "-")
             with cols[i % len(cols)]:
                 if r.get("error"):
-                    body = f"<span style='color:{color}'>센서 오류: {r['error']}</span>"
+                    body = f"<span style='color:{color}'>센서 오류: {html.escape(r['error'])}</span>"
+                elif r.get("pending"):
+                    body = "⏳ 첫 측정 대기 중"
                 else:
                     rd = r["reading"]
                     on = [DEVICES[d] for d, v in r["actuators"].items() if v]
@@ -86,10 +86,13 @@ def render_dashboard(m: FarmManager):
                             f"🦠 최고 병해위험: {top_risk[0]} {top_risk[1]}점<br>"
                             f"⚙️ {'자동' if farm.get('auto_control', True) else '수동'} | 가동: {', '.join(on) or '없음'}<br>"
                             f"<small>측정: {r.get('ts', '-')}</small>")
+                    stale = next((a for a in r["alerts"] if a["metric"] == "stale"), None)
+                    if stale:
+                        body += f"<br><b style='color:{color}'>⚠ {stale['message']}</b>"
                 st.markdown(f"""<div class="result-card" style="border-left:6px solid {color};">
-                    <b>{FARM_TYPES.get(farm.get('type'), '🏭').split()[0]} {farm['name']}</b>
+                    <b>{_icon(farm)} {html.escape(farm['name'])}</b>
                     <span style="float:right;color:{color};font-weight:bold;">● {word}</span><br>
-                    <small>{stage} · {farm.get('location', '')}</small><hr style="margin:6px 0">{body}</div>""",
+                    <small>{stage} · {html.escape(farm.get('location', ''))}</small><hr style="margin:6px 0">{body}</div>""",
                             unsafe_allow_html=True)
 
         st.write("#### 🔔 최근 경보")
@@ -97,7 +100,7 @@ def render_dashboard(m: FarmManager):
         if al:
             names = {f["id"]: f["name"] for f in m.farms}
             df = pd.DataFrame(al)[["ts", "farm_id", "level", "message"]]
-            df["farm_id"] = df["farm_id"].map(lambda x: names.get(x, x))
+            df["farm_id"] = df["farm_id"].map(lambda x: names.get(x, f"{x} (삭제됨)"))
             df["level"] = df["level"].map(lambda x: LEVEL_STYLE.get(x, ("", x))[1])
             df.columns = ["일시", "농장", "등급", "내용"]
             st.dataframe(df, hide_index=True, width="stretch")
@@ -127,14 +130,24 @@ def render_farm_detail(m: FarmManager, fid: str):
         st.warning("농장을 선택하세요.")
         return
     profile = m.profile(fid)
-    st.write(f"### {FARM_TYPES.get(farm['type'], '🏭').split()[0]} {farm['name']} — {profile['label']}")
+    st.write(f"### {_icon(farm)} {farm['name']} — {profile['label']}")
     st.caption(f"📖 관리 기준: {profile['note']}")
+    if farm.get("stage") == "disease" and farm.get("prev_stage"):
+        prev = STAGE_PROFILES.get(farm["prev_stage"], {}).get("label", farm["prev_stage"])
+        st.warning(f"🛡️ 병해 긴급관리 중입니다. 상황이 정리되면 이전 단계({prev})로 복귀하세요.")
+        if st.button(f"↩️ '{prev}' 단계로 복귀", key=f"restore_{fid}"):
+            m.restore_stage(fid)
+            st.rerun()
 
     @st.fragment(run_every=m.config.get("poll_interval_sec", 10))
     def live():
-        r = _latest_result(m, fid)
+        _header_notices(m)
+        r = _status(m, fid)
         if r.get("error"):
-            st.error(f"센서 통신 오류: {r['error']}")
+            st.error(f"센서 통신 오류: {r['error']} — 자동제어 중이면 히터·가습기 OFF, 환기 ON(안전모드)")
+            return
+        if r.get("pending"):
+            st.info("⏳ 첫 측정을 기다리는 중입니다.")
             return
         rd = r["reading"]
         cols = st.columns(len(METRICS))
@@ -145,9 +158,11 @@ def render_farm_detail(m: FarmManager, fid: str):
 
         if profile.get("day_night_diff"):
             dnd = r.get("day_night_diff")
-            ok = dnd is not None and dnd >= profile["day_night_diff"]
-            (st.success if ok else st.warning)(
-                f"🌗 24시간 주야 온도차 {dnd if dnd is not None else '-'}℃ (변온관리 목표 {profile['day_night_diff']}℃ 이상)")
+            if dnd is None:
+                st.info(f"🌗 주야 온도차: 데이터 수집 중 (20시간 이상 필요, 목표 {profile['day_night_diff']}℃ 이상)")
+            else:
+                (st.success if dnd >= profile["day_night_diff"] else st.warning)(
+                    f"🌗 24시간 주야 온도차 {dnd}℃ (변온관리 목표 {profile['day_night_diff']}℃ 이상)")
 
         for a in r["alerts"]:
             (st.error if a["level"] == "critical" else st.warning)(a["message"])
@@ -166,10 +181,19 @@ def render_farm_detail(m: FarmManager, fid: str):
         st.rerun()
     state = m.actuator_state(fid)
     dcols = st.columns(len(DEVICES))
+
+    def on_toggle(dev):
+        m.set_actuator(fid, dev, st.session_state[f"{fid}_{dev}"], source="manual")
+        # 인터록 등으로 다른 장치 상태가 바뀌었을 수 있으므로 화면 값 재동기화
+        for d in DEVICES:
+            st.session_state[f"{fid}_{d}"] = m.actuator_state(fid).get(d, False)
+
     for col, (dev, label) in zip(dcols, DEVICES.items()):
-        val = col.toggle(label, value=state.get(dev, False), key=f"{fid}_{dev}", disabled=auto)
-        if not auto and val != state.get(dev, False):
-            m.set_actuator(fid, dev, val, source="manual")
+        # 화면 스위치를 실제 장치 상태와 맞춘다 (자동제어·인터록·안전모드로 바뀐 상태 반영)
+        st.session_state[f"{fid}_{dev}"] = state.get(dev, False)
+        col.toggle(label, key=f"{fid}_{dev}", disabled=auto, on_change=on_toggle, args=(dev,))
+    if not auto:
+        st.caption("❄️ 냉방기와 🔥 히터는 동시에 켤 수 없습니다(인터록).")
     if auto:
         st.caption("자동 제어 중에는 수동 조작이 잠깁니다. 끄면 직접 조작할 수 있습니다.")
 
@@ -242,13 +266,16 @@ def render_farm_admin(m: FarmManager):
         stage = c2.selectbox("재배 단계", list(STAGE_PROFILES), format_func=lambda s: STAGE_PROFILES[s]["label"])
         loc = c3.text_input("위치/메모")
         sensor, actuator = _sensor_form("new")
-        if st.button("농장 추가", type="primary", disabled=not name):
-            f = m.add_farm(name, ftype, stage, sensor, actuator, loc)
-            st.success(f"'{f['name']}' 추가 완료 (ID: {f['id']})")
-            st.rerun()
+        if st.button("농장 추가", type="primary", disabled=not name.strip()):
+            try:
+                f = m.add_farm(name, ftype, stage, sensor, actuator, loc)
+                st.toast(f"'{f['name']}' 추가 완료 (ID: {f['id']})")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
 
     for farm in list(m.farms):
-        with st.expander(f"{FARM_TYPES.get(farm['type'], '🏭').split()[0]} {farm['name']}  ·  {farm['id']}"):
+        with st.expander(f"{_icon(farm)} {farm['name']}  ·  {farm['id']}"):
             c1, c2, c3 = st.columns(3)
             name = c1.text_input("이름", farm["name"], key=f"n_{farm['id']}")
             ftype = c2.selectbox("유형", list(FARM_TYPES), index=list(FARM_TYPES).index(farm.get("type", "container")),
@@ -269,22 +296,23 @@ def render_farm_admin(m: FarmManager):
             for i, k in enumerate(("temperature", "humidity")):
                 lo, hi = th.get(k, base[k])
                 v = tcols[i].slider(f"{METRICS[k][0]} 범위({METRICS[k][1]})", 0.0, 100.0 if k == "humidity" else 40.0,
-                                    (float(lo or 0), float(hi or 40)), 0.5, key=f"th_{k}_{farm['id']}")
-                if v != tuple(base[k]):
+                                    (float(lo or 0), float(hi or 40)), 0.5, key=f"th_{k}_{farm['id']}_{stage}")
+                if v != tuple(float(x) for x in base[k]):
                     th[k] = list(v)
                 else:
                     th.pop(k, None)
 
             b1, b2, b3 = st.columns(3)
-            if b1.button("💾 저장", key=f"save_{farm['id']}", type="primary"):
-                m.update_farm(farm["id"], name=name, type=ftype, stage=stage, location=loc,
+            if b1.button("💾 저장", key=f"save_{farm['id']}", type="primary", disabled=not name.strip()):
+                m.update_farm(farm["id"], name=name.strip(), type=ftype, stage=stage, location=loc,
                               sensor=sensor, actuator=actuator, thresholds=th)
                 st.success("저장되었습니다.")
                 st.rerun()
             if b2.button("↺ 기준값 초기화", key=f"reset_{farm['id']}"):
                 m.update_farm(farm["id"], thresholds={})
                 st.rerun()
-            if b3.button("🗑️ 삭제", key=f"del_{farm['id']}"):
+            confirm = b3.checkbox("삭제 확인", key=f"delc_{farm['id']}")
+            if b3.button("🗑️ 삭제", key=f"del_{farm['id']}", disabled=not confirm):
                 m.remove_farm(farm["id"])
                 st.rerun()
 
