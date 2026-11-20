@@ -3,7 +3,7 @@
 - 점검일: 2026-11-20
 - 대상: `app/smartfarm/*`, `app/smartfarm_ui.py`, `app/mushroom_detect_app.py`, `app/collector.py`, `firmware/sensor_node`
 - 방법: 코드 리뷰 → 결함 재현 테스트 작성(`tests/test_qa_regressions.py`) → 수정 → 회귀/E2E 확인
-- 결과: **결함 19건 수정**, 자동 테스트 6 → 18건 (전부 통과), Streamlit E2E 시나리오 4건 통과
+- 결과: **결함 25건 수정** (치명 7 · 주요 10 ·보통 8), 자동 테스트 6 → 18건 (전부 통과), Streamlit E2E 시나리오 4건 통과
 
 ## 1. 결함 및 조치
 
