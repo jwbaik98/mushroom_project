@@ -87,7 +87,7 @@ def render_dashboard(m: FarmManager):
                             f"⚙️ {'자동' if farm.get('auto_control', True) else '수동'} | 가동: {', '.join(on) or '없음'}<br>"
                             f"<small>측정: {r.get('ts', '-')}</small>")
                 st.markdown(f"""<div class="result-card" style="border-left:6px solid {color};">
-                    <b>{FARM_TYPES.get(farm.get('type'), '')} {farm['name']}</b>
+                    <b>{FARM_TYPES.get(farm.get('type'), ' ').split()[0]} {farm['name']}</b>
                     <span style="float:right;color:{color};font-weight:bold;">● {word}</span><br>
                     <small>{stage} · {farm.get('location', '')}</small><hr style="margin:6px 0">{body}</div>""",
                             unsafe_allow_html=True)
@@ -127,7 +127,7 @@ def render_farm_detail(m: FarmManager, fid: str):
         st.warning("농장을 선택하세요.")
         return
     profile = m.profile(fid)
-    st.write(f"### {FARM_TYPES.get(farm['type'], '')[:2]} {farm['name']} — {profile['label']}")
+    st.write(f"### {FARM_TYPES.get(farm['type'], ' ').split()[0]} {farm['name']} — {profile['label']}")
     st.caption(f"📖 관리 기준: {profile['note']}")
 
     @st.fragment(run_every=m.config.get("poll_interval_sec", 10))
@@ -248,7 +248,7 @@ def render_farm_admin(m: FarmManager):
             st.rerun()
 
     for farm in list(m.farms):
-        with st.expander(f"{FARM_TYPES.get(farm['type'], '')} {farm['name']}  ·  {farm['id']}"):
+        with st.expander(f"{FARM_TYPES.get(farm['type'], ' ').split()[0]} {farm['name']}  ·  {farm['id']}"):
             c1, c2, c3 = st.columns(3)
             name = c1.text_input("이름", farm["name"], key=f"n_{farm['id']}")
             ftype = c2.selectbox("유형", list(FARM_TYPES), index=list(FARM_TYPES).index(farm.get("type", "container")),
