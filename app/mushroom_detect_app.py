@@ -7,9 +7,6 @@ import os
 import csv
 import re
 from datetime import datetime
-from llama_cpp import Llama
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
 import sys
 import signal
 from PIL import ImageDraw, ImageFont
@@ -25,12 +22,25 @@ if site_packages_path not in sys.path:
 # 3. 디버깅 출력 (나중에 확인용)
 print(f"Searching in: {site_packages_path}")
 
+# LLM/RAG 패키지는 선택 사항: 없어도 스마트팜 대시보드와 YOLO 판독은 동작
 try:
     from llama_cpp import Llama
 except ImportError as e:
     print(f"Import Error details: {e}")
-    # 만약 실패하면 여기서 실행 중단
-    raise e
+    Llama = None
+try:
+    from sentence_transformers import SentenceTransformer
+    from sklearn.metrics.pairwise import cosine_similarity
+except ImportError as e:
+    print(f"Import Error details: {e}")
+    SentenceTransformer = None
+
+# 스마트팜(멀티 컨테이너·비닐하우스) 모듈
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from smartfarm_ui import get_farm_manager, render_dashboard, render_farm_detail, render_farm_admin
+from smartfarm import FARM_TYPES
+
+st.set_page_config(page_title="표고버섯 AI 스마트팜", page_icon="🍄", layout="wide")
 
 # --- [1. 세션 상태 초기화] ---
 if 'run_cam' not in st.session_state:
@@ -40,11 +50,10 @@ if 'last_ai_res' not in st.session_state:
 if 'prev_status' not in st.session_state:
     st.session_state.prev_status = ""
 
-st.set_page_config(page_title="표고버섯 AI 판독기", page_icon="🍄", layout="wide")
 
 # --- [2. CSV 저장 (한글 깨짐 방지)] ---
 def save_feedback(status, context, answer, score):
-    log_file = 'mushroom_ai_feedback.csv'
+    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mushroom_ai_feedback.csv')
     file_exists = os.path.isfile(log_file)
     with open(log_file, mode='a', encoding='utf-8-sig', newline='') as f:
         writer = csv.writer(f)
@@ -75,6 +84,8 @@ def init_all_models():
     embeddings = []
     
     try:
+        if SentenceTransformer is None:
+            raise ImportError("sentence-transformers 미설치")
         # 한국어 성능이 좋은 모델로 명시적 생성
         embed_model = SentenceTransformer('jhgan/ko-sroberta-multitask')
         
@@ -93,6 +104,8 @@ def init_all_models():
     # 4. LLM(Gemma) 모델 로드
     llm = None
     try:
+        if Llama is None:
+            raise ImportError("llama-cpp-python 미설치")
         gguf_files = [f for f in os.listdir(curr_dir) if f.endswith('.gguf')]
         if gguf_files:
             # 가장 용량이 큰 GGUF 파일을 자동으로 선택
@@ -106,7 +119,6 @@ def init_all_models():
     # 모든 변수가 값이 있든 None이든 반환되도록 보장
     return yolo, embed_model, chunks, embeddings, llm
 
-yolo_model, embed_model, chunks, embeddings, llm_model = init_all_models()
 
 disease_lookup = {
     "dis": "푸른곰팡이병", 
@@ -115,7 +127,7 @@ disease_lookup = {
 }
 
 def search_rag(query, k=3):
-    if not chunks: return "매뉴얼을 참고하세요."
+    if not chunks or embed_model is None: return "매뉴얼을 참고하세요."
     query_vec = embed_model.encode([query])
     distances = cosine_similarity(query_vec, embeddings)[0]
     top_indices = distances.argsort()[-k:][::-1]
@@ -136,18 +148,41 @@ def apply_custom_css(theme):
 with st.sidebar:
     st.title("🍄 설 정")
     theme = st.radio("🎨 테마", ["Light (화이트)", "Dark (블랙)"])
-    mode = st.selectbox("🖥️ 분석 모드", ["📸 사진 분석", "📹 실시간 영상"])
-    conf_v = st.slider("🎯 탐지 민감도", 0.1, 1.0, 0.3)
-    iou_v = st.slider("중복제거", 0.1, 0.9, 0.35)
+    mode = st.selectbox("🖥️ 메뉴", ["🏠 통합 대시보드", "🌡️ 농장 모니터링·제어", "📸 사진 분석",
+                                     "📹 실시간 영상", "⚙️ 농장 관리"])
+
+    farm_mgr = get_farm_manager()
+    farm_ids = [f["id"] for f in farm_mgr.farms]
+    farm_names = {f["id"]: f"{FARM_TYPES.get(f.get('type'), '')[:2]} {f['name']}" for f in farm_mgr.farms}
+    current_farm = st.selectbox("🏭 대상 농장", farm_ids, format_func=lambda x: farm_names.get(x, x)) if farm_ids else None
+
+    if mode in ("📸 사진 분석", "📹 실시간 영상"):
+        conf_v = st.slider("🎯 탐지 민감도", 0.1, 1.0, 0.3)
+        iou_v = st.slider("중복제거", 0.1, 0.9, 0.35)
 
 apply_custom_css(theme)
-st.markdown('<div class="main-header"><h1>🍄 표고버섯 AI 판독기</h1></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>🍄 표고버섯 AI 스마트팜</h1></div>', unsafe_allow_html=True)
+
+if mode in ("📸 사진 분석", "📹 실시간 영상"):
+    yolo_model, embed_model, chunks, embeddings, llm_model = init_all_models()
+
+# 현재 농장 환경을 AI 처방에 함께 제공
+env_context = farm_mgr.env_summary(current_farm) if current_farm else ""
 
 disease_lookup = {"dis": "푸른곰팡이병", "mold": "털곰팡이병", "spot": "갈색점무늬병"}
 
 # --- [6. 분석 로직] ---
 
-if mode == "📸 사진 분석":
+if mode == "🏠 통합 대시보드":
+    render_dashboard(farm_mgr)
+
+elif mode == "🌡️ 농장 모니터링·제어":
+    render_farm_detail(farm_mgr, current_farm)
+
+elif mode == "⚙️ 농장 관리":
+    render_farm_admin(farm_mgr)
+
+elif mode == "📸 사진 분석":
     col1, col2 = st.columns([1.2, 1])
     boxes = []
     
@@ -222,6 +257,20 @@ if mode == "📸 사진 분석":
                     </div>
                 ''', unsafe_allow_html=True)
 
+            # 판독 결과를 선택된 농장 이력에 기록 (같은 사진은 1회만)
+            diseases_found = sorted({s for s in status_for_ai if s != "정상"})
+            diag_key = f"{current_farm}_{f.name}_{len(boxes)}"
+            if current_farm and st.session_state.get("last_diag_key") != diag_key:
+                st.session_state.last_diag_key = diag_key
+                farm_mgr.storage.add_diagnosis(current_farm, ", ".join(diseases_found) or "정상",
+                                               {"detections": len(boxes), "source": "photo"})
+            if diseases_found and current_farm:
+                farm = farm_mgr.farm(current_farm)
+                st.error(f"🚨 {farm['name']}에서 병해({', '.join(diseases_found)})가 탐지되었습니다. {env_context}")
+                if farm.get("stage") != "disease" and st.button("🛡️ 이 농장을 '병해 긴급관리' 모드로 전환 (습도↓·온도↓·환기)"):
+                    farm_mgr.update_farm(current_farm, stage="disease", auto_control=True)
+                    st.success("전환 완료: 자동제어가 병해 긴급관리 기준(15~18℃, 습도 70~80%)으로 동작합니다.")
+
 # 2. AI 처방전 섹션
             if llm_model and len(status_for_ai) > 0:
                 st.markdown("---")
@@ -243,6 +292,7 @@ if mode == "📸 사진 분석":
                 - "먹지 마라"는 표현 대신 "제거하십시오" 또는 "폐기하십시오"라고 하십시오.
 
                 [진단 대상]: {target_status}
+                [재배사 현재 환경]: {env_context}
                 [참고 자료]: {clean_context[:400]}
 
                 보고서 내용:
@@ -371,6 +421,7 @@ elif mode == "📹 실시간 영상":
                                 - "먹지 마라"는 표현 대신 "제거하십시오" 또는 "폐기하십시오"라고 하십시오.
 
                                 [진단 대상]: {d_name}
+                                [재배사 현재 환경]: {env_context}
                                 [참고 자료]: {current_context[:400]}
 
                                 보고서 내용:
@@ -389,6 +440,8 @@ elif mode == "📹 실시간 영상":
                                 ans_text = "1. " + output['choices'][0]['text'].strip()
                                 st.session_state.last_ai_res = ans_text
                                 st.session_state.prev_status = d_name
+                                if current_farm:
+                                    farm_mgr.storage.add_diagnosis(current_farm, d_name, {"source": "camera"})
                             except:
                                 st.session_state.last_ai_res = "분석 일시 지연 (재시도 중)"
 

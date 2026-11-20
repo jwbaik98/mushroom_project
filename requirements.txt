@@ -14,3 +14,6 @@ scikit-learn
 
 # [기타 유틸리티]
 python-dotenv
+# [스마트팜 센서 연동 (선택)]
+# paho-mqtt   # MQTT 센서/구동기 사용 시
+# pyserial    # USB 시리얼 센서 사용 시

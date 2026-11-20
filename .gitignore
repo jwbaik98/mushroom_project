@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+app/smartfarm.db
+app/farms.json.tmp
+.pytest_cache/

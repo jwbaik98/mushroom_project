@@ -1,0 +1,41 @@
+{
+  "poll_interval_sec": 10,
+  "notify": {
+    "webhook_url": ""
+  },
+  "farms": [
+    {
+      "id": "container-a",
+      "name": "컨테이너 A동",
+      "type": "container",
+      "stage": "growth",
+      "location": "1번 부지",
+      "auto_control": true,
+      "sensor": {"driver": "simulator", "base_temperature": 16},
+      "actuator": {"driver": "simulator"},
+      "thresholds": {}
+    },
+    {
+      "id": "container-b",
+      "name": "컨테이너 B동",
+      "type": "container",
+      "stage": "culture",
+      "location": "1번 부지",
+      "auto_control": true,
+      "sensor": {"driver": "simulator", "base_temperature": 23},
+      "actuator": {"driver": "simulator"},
+      "thresholds": {}
+    },
+    {
+      "id": "greenhouse-1",
+      "name": "비닐하우스 1동",
+      "type": "greenhouse",
+      "stage": "growth",
+      "location": "2번 부지",
+      "auto_control": false,
+      "sensor": {"driver": "simulator", "base_temperature": 15, "base_humidity": 88},
+      "actuator": {"driver": "simulator"},
+      "thresholds": {}
+    }
+  ]
+}
