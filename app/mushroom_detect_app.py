@@ -153,7 +153,7 @@ with st.sidebar:
 
     farm_mgr = get_farm_manager()
     farm_ids = [f["id"] for f in farm_mgr.farms]
-    farm_names = {f["id"]: f"{FARM_TYPES.get(f.get('type'), ' ').split()[0]} {f['name']}" for f in farm_mgr.farms}
+    farm_names = {f["id"]: f"{FARM_TYPES.get(f.get('type'), '🏭').split()[0]} {f['name']}" for f in farm_mgr.farms}
     current_farm = st.selectbox("🏭 대상 농장", farm_ids, format_func=lambda x: farm_names.get(x, x)) if farm_ids else None
 
     if mode in ("📸 사진 분석", "📹 실시간 영상"):
