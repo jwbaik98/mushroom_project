@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+from datetime import datetime
 import json
 import os
 
@@ -13,6 +14,7 @@ from smartfarm.drivers import DEVICES
 from smartfarm.profiles import METRICS
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+SOURCE_LABEL = {"auto": "🤖 자동", "manual": "👤 수동", "failsafe": "🛡️ 안전모드", "interlock": "🔒 인터록"}
 LEVEL_STYLE = {"normal": ("#4CAF50", "정상"), "warning": ("#FF9800", "주의"), "critical": ("#FF5252", "위험")}
 
 
@@ -28,6 +30,11 @@ def get_farm_manager() -> FarmManager:
 
 def _fmt(v, unit):
     return "-" if v is None else f"{v:.1f}{unit}" if isinstance(v, float) else f"{v}{unit}"
+
+
+def _md(text: str) -> str:
+    """'8~22℃' 의 '~' 가 마크다운 취소선으로 렌더링되지 않도록 이스케이프."""
+    return str(text).replace("~", "\\~")
 
 
 def _icon(farm) -> str:
@@ -131,7 +138,7 @@ def render_farm_detail(m: FarmManager, fid: str):
         return
     profile = m.profile(fid)
     st.write(f"### {_icon(farm)} {farm['name']} — {profile['label']}")
-    st.caption(f"📖 관리 기준: {profile['note']}")
+    st.caption(_md(f"📖 관리 기준: {profile['note']}"))
     if farm.get("stage") == "disease" and farm.get("prev_stage"):
         prev = STAGE_PROFILES.get(farm["prev_stage"], {}).get("label", farm["prev_stage"])
         st.warning(f"🛡️ 병해 긴급관리 중입니다. 상황이 정리되면 이전 단계({prev})로 복귀하세요.")
@@ -144,7 +151,7 @@ def render_farm_detail(m: FarmManager, fid: str):
         _header_notices(m)
         r = _status(m, fid)
         if r.get("error"):
-            st.error(f"센서 통신 오류: {r['error']} — 자동제어 중이면 히터·가습기 OFF, 환기 ON(안전모드)")
+            st.error(_md(f"센서 통신 오류: {r['error']}") + " — 자동제어 중이면 히터·가습기 OFF, 환기 ON(안전모드)")
             return
         if r.get("pending"):
             st.info("⏳ 첫 측정을 기다리는 중입니다.")
@@ -153,8 +160,17 @@ def render_farm_detail(m: FarmManager, fid: str):
         cols = st.columns(len(METRICS))
         for col, (k, (name, unit)) in zip(cols, METRICS.items()):
             rng = profile.get(k)
-            target = "" if not rng else f"기준 {rng[0] if rng[0] is not None else ''}~{rng[1] if rng[1] is not None else ''}"
-            col.metric(f"{name}", _fmt(rd.get(k), unit), target, delta_color="off")
+            if not rng:
+                target = None
+            else:
+                lo, hi = rng
+                v = rd.get(k)
+                out = v is not None and ((lo is not None and v < lo) or (hi is not None and v > hi))
+                if k == "lux" and out and lo is not None and v < lo and not (6 <= datetime.now().hour < 18):
+                    out = False  # 야간 조도 부족은 정상
+                fmt = lambda x: "" if x is None else f"{x:g}"
+                target = f"{'⚠ 이탈' if out else '✓ 기준'} {fmt(lo)}~{fmt(hi)}"
+            col.metric(name, _fmt(rd.get(k), unit), target, delta_color="off", delta_arrow="off")
 
         if profile.get("day_night_diff"):
             dnd = r.get("day_night_diff")
@@ -165,7 +181,7 @@ def render_farm_detail(m: FarmManager, fid: str):
                     f"🌗 24시간 주야 온도차 {dnd}℃ (변온관리 목표 {profile['day_night_diff']}℃ 이상)")
 
         for a in r["alerts"]:
-            (st.error if a["level"] == "critical" else st.warning)(a["message"])
+            (st.error if a["level"] == "critical" else st.warning)(_md(a["message"]))
 
         st.write("#### 🦠 병해 발생 위험도")
         rc = st.columns(len(r["risks"]) or 1)
@@ -206,8 +222,13 @@ def render_farm_detail(m: FarmManager, fid: str):
         df["ts"] = pd.to_datetime(df["ts"])
         df = df.set_index("ts")
         t1, t2, t3 = st.tabs(["🌡️ 온·습도", "🫧 CO₂ / 조도", "⬇️ 데이터"])
-        t1.line_chart(df[["temperature", "humidity"]])
-        t2.line_chart(df[["co2", "lux"]])
+        # 단위·범위가 달라 한 축에 그리면 온도선이 평평해 보이므로 항목별로 분리
+        for tab, keys in ((t1, ("temperature", "humidity")), (t2, ("co2", "lux"))):
+            cc = tab.columns(2)
+            for c, k in zip(cc, keys):
+                name, unit = METRICS[k]
+                c.caption(f"{name} ({unit})")
+                c.line_chart(df[[k]].rename(columns={k: name}), height=220)
         t3.download_button("CSV 다운로드", df.to_csv().encode("utf-8-sig"), f"{fid}_readings.csv", "text/csv")
         t3.dataframe(df.tail(200), width="stretch")
 
@@ -219,12 +240,16 @@ def render_farm_detail(m: FarmManager, fid: str):
             d = pd.DataFrame(log)[["ts", "device", "state", "source"]]
             d["device"] = d["device"].map(lambda x: DEVICES.get(x, x))
             d["state"] = d["state"].map({1: "ON", 0: "OFF"})
+            d["source"] = d["source"].map(lambda x: SOURCE_LABEL.get(x, x))
+            d.columns = ["일시", "장치", "상태", "구분"]
             st.dataframe(d, hide_index=True, width="stretch")
     with c2:
         st.write("#### 🍄 AI 판독 이력")
         dg = m.storage.diagnoses(fid, 20)
         if dg:
-            st.dataframe(pd.DataFrame(dg)[["ts", "result"]], hide_index=True, width="stretch")
+            dd = pd.DataFrame(dg)[["ts", "result"]]
+            dd.columns = ["일시", "판독 결과"]
+            st.dataframe(dd, hide_index=True, width="stretch")
         else:
             st.caption("사진/영상 분석 시 선택된 농장으로 자동 기록됩니다.")
 

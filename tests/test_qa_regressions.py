@@ -133,3 +133,8 @@ def test_broken_config_file_does_not_crash(tmp_path):
     m = FarmManager(str(cfg), str(tmp_path / "sf.db"))
     assert m.farms and m.config_error
     assert list(tmp_path.glob("farms.json.broken-*"))
+
+
+def test_sensor_error_message_is_user_friendly():
+    from smartfarm.manager import friendly_error
+    assert "센서 노드 전원" in friendly_error(OSError("<urlopen error [Errno 111] Connection refused>"))

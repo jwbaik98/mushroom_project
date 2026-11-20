@@ -33,6 +33,23 @@ FAILSAFE = {"heater": False, "cooler": False, "humidifier": False, "fan": True}
 IMMEDIATE_OFF = {"heater", "humidifier"}
 
 
+def friendly_error(e: Exception) -> str:
+    """통신 예외를 현장 작업자가 이해할 수 있는 문구로 변환."""
+    msg = str(e)
+    low = msg.lower()
+    if "refused" in low:
+        return "연결 거부 — 센서 노드 전원/주소(IP·포트) 확인"
+    if "timed out" in low or "timeout" in low:
+        return "응답 시간 초과 — 와이파이 신호/노드 상태 확인"
+    if "name or service not known" in low or "getaddrinfo" in low or "nodename" in low:
+        return "주소를 찾을 수 없음 — 센서 URL 확인"
+    if "no route" in low or "unreachable" in low:
+        return "네트워크 연결 불가 — 공유기/케이블 확인"
+    if "could not open port" in low or "filenotfound" in low:
+        return "시리얼 포트를 열 수 없음 — USB 연결/포트 번호 확인"
+    return msg
+
+
 class FarmManager:
     def __init__(self, config_path: str, db_path: str):
         self.config_path = config_path
@@ -201,7 +218,7 @@ class FarmManager:
             self._driver(farm).apply(self.actuator_state(farm_id))
             self.last_apply[farm_id] = time.time()
         except Exception as e:
-            self.storage.add_alert(farm_id, "warning", "actuator", f"구동기 통신 실패: {e}")
+            self.storage.add_alert(farm_id, "warning", "actuator", f"구동기 통신 실패: {friendly_error(e)}")
 
     # ---------- 상태 판단 ----------
     def snapshot(self, farm_id, reading: dict | None = None, ts: str | None = None) -> dict:
@@ -256,9 +273,10 @@ class FarmManager:
                 reading = self._driver(farm).read(state)
                 if not reading:
                     raise ValueError("유효한 센서값이 없습니다 (범위 밖/누락)")
-            except Exception as e:
+            except Exception as exc:
+                e = friendly_error(exc)
                 first = farm_id not in self.errors
-                self.errors[farm_id] = str(e)
+                self.errors[farm_id] = e
                 self._close_driver(farm_id)  # 다음 주기에 재연결 시도
                 if self.storage.add_alert(farm_id, "critical", "sensor", f"센서 통신 오류: {e}"):
                     self._notify(farm, [f"센서 통신 오류: {e}"])

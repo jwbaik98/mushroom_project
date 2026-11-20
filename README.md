@@ -51,7 +51,7 @@ python app/collector.py        # farms.json 에 "ui_collector": false 로 앱의
 - 접속 비밀번호: 환경변수 `SMARTFARM_PASSWORD`
 - 데이터 보관 기간: `retention_days`(기본 90일)
 
-QA 점검 내역은 [`docs/QA_REPORT.md`](docs/QA_REPORT.md) 참고.
+QA 점검 내역은 [`docs/QA_REPORT.md`](docs/QA_REPORT.md), 기능별 화면은 [`docs/SCREENSHOTS.md`](docs/SCREENSHOTS.md) 참고.
 
 ## 테스트
 ```bash
